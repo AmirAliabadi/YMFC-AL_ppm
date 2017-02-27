@@ -579,12 +579,17 @@ int convert_receiver_channel(byte function){
   else reverse = 0;                                                            //If the most significant is not set there is no reverse
 
   //AA actual = receiver_input[channel];                                            //Read the actual receiver value for the corresponding function
+
+  //////////////////////////////////////
   // AA read from the PPM channel
   cli();  
     actual = ppm_channels[channel] ;
   sei();
+  
   // 20us of deadband
   if( actual >= 1490 && actual <= 1510 ) actual    = 1500;
+  // AA read from the PPM channel
+  //////////////////////////////////////
   
   
   low = (eeprom_data[channel * 2 + 15] << 8) | eeprom_data[channel * 2 + 14];  //Store the low value for the specific receiver input channel
