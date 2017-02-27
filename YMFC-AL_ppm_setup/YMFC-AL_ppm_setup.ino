@@ -34,15 +34,74 @@ float gyro_pitch, gyro_roll, gyro_yaw;
 float gyro_roll_cal, gyro_pitch_cal, gyro_yaw_cal;
 
 
+////////////////////////////////////////////////////////
+// PPM Input                                          //
+////////////////////////////////////////////////////////
+volatile unsigned long last_ppm_clock = 99999;
+volatile unsigned long current_ppm_clock = 0;
+volatile unsigned long ppm_dt = 0;
+volatile boolean ppm_read = true;
+volatile boolean ppm_sync = false;
+volatile unsigned short ppm_current_channel = 99;
+volatile unsigned long ppm_channels[11] = {0,0,0,0,0,0,0,0,0,0,0};
+
+void ppmRising() {
+  ppm_read = false;
+    {
+      current_ppm_clock = micros();
+      ppm_dt = current_ppm_clock - last_ppm_clock;
+      if( ppm_dt >= 3500 ) {
+        ppm_sync = true;
+        ppm_current_channel = 0;
+        ppm_channels[ppm_current_channel] = ppm_dt;         
+      }
+      else {
+        if( ppm_sync ) {
+          ppm_current_channel++;
+          if( ppm_current_channel > 7 ) ppm_sync = false;
+          else ppm_channels[ppm_current_channel] = ppm_dt; 
+        }
+      }
+      last_ppm_clock = current_ppm_clock;   
+    }
+  ppm_read = true;
+
+  read_receiver();
+}
+
+void read_receiver() {
+  if( ppm_read && ppm_sync ) {
+    cli();
+    receiver_input_channel_1 = ppm_channels[1] ;    
+    receiver_input_channel_2 = ppm_channels[2] ;    
+    receiver_input_channel_3 = ppm_channels[3] ;    
+    receiver_input_channel_4 = ppm_channels[4] ;    
+    sei();
+  }
+
+  // 20us of deadband
+  if( receiver_input_channel_1 >= 1490 && receiver_input_channel_1 <= 1510 ) receiver_input_channel_1    = 1500;  
+  if( receiver_input_channel_2 >= 1490 && receiver_input_channel_2 <= 1510 ) receiver_input_channel_2    = 1500;  
+  if( receiver_input_channel_3 >= 1490 && receiver_input_channel_3 <= 1510 ) receiver_input_channel_3    = 1500;  
+  if( receiver_input_channel_4 >= 1490 && receiver_input_channel_4 <= 1510 ) receiver_input_channel_4    = 1500;  
+}
+
+///////////////////////////////////////////////////
+// PPM Input                                     //
+///////////////////////////////////////////////////
+
+
 //Setup routine
 void setup(){
   pinMode(12, OUTPUT);
   //Arduino (Atmega) pins default to inputs, so they don't need to be explicitly declared as inputs
-  PCICR |= (1 << PCIE0);    // set PCIE0 to enable PCMSK0 scan
-  PCMSK0 |= (1 << PCINT0);  // set PCINT0 (digital input 8) to trigger an interrupt on state change
-  PCMSK0 |= (1 << PCINT1);  // set PCINT1 (digital input 9)to trigger an interrupt on state change
-  PCMSK0 |= (1 << PCINT2);  // set PCINT2 (digital input 10)to trigger an interrupt on state change
-  PCMSK0 |= (1 << PCINT3);  // set PCINT3 (digital input 11)to trigger an interrupt on state change
+//  PCICR |= (1 << PCIE0);    // set PCIE0 to enable PCMSK0 scan
+//  PCMSK0 |= (1 << PCINT0);  // set PCINT0 (digital input 8) to trigger an interrupt on state change
+//  PCMSK0 |= (1 << PCINT1);  // set PCINT1 (digital input 9)to trigger an interrupt on state change
+//  PCMSK0 |= (1 << PCINT2);  // set PCINT2 (digital input 10)to trigger an interrupt on state change
+//  PCMSK0 |= (1 << PCINT3);  // set PCINT3 (digital input 11)to trigger an interrupt on state change
+  attachInterrupt(digitalPinToInterrupt(3), ppmRising, RISING);   
+  
   Wire.begin();             //Start the I2C as master
   Serial.begin(57600);      //Start the serial connetion @ 57600bps
   delay(250);               //Give the gyro time to start 
@@ -789,6 +848,7 @@ void check_gyro_axes(byte movement){
   
 }
 
+/*
 //This routine is called every time input 8, 9, 10 or 11 changed state
 ISR(PCINT0_vect){
   current_time = micros();
@@ -838,6 +898,7 @@ ISR(PCINT0_vect){
     receiver_input_channel_4 = current_time - timer_4;         //Channel 4 is current_time - timer_4
   }
 }
+*/
 
 //Intro subroutine
 void intro(){

@@ -67,11 +67,46 @@ float pid_i_mem_yaw, pid_yaw_setpoint, gyro_yaw_input, pid_output_yaw, pid_last_
 float angle_roll_acc, angle_pitch_acc, angle_pitch, angle_roll;
 boolean gyro_angles_set;
 
+
+////////////////////////////////////////////////////////
+// AA Input                                           //
+////////////////////////////////////////////////////////
+volatile unsigned long last_ppm_clock = 99999;
+volatile unsigned long current_ppm_clock = 0;
+volatile unsigned long ppm_dt = 0;
+volatile boolean ppm_sync = false;
+volatile unsigned short ppm_current_channel = 99;
+volatile unsigned long ppm_channels[11] = {0,0,0,0,0,0,0,0,0,0,0}; // at most 10 channels (sync chaneel + 10 = 11)
+#define NUMBER_OF_PPM_CHANNELS 4
+
+void ppmRising() {
+  current_ppm_clock = micros();
+  ppm_dt = current_ppm_clock - last_ppm_clock;
+  if( ppm_dt >= 3500 ) {
+    ppm_sync = true;
+    ppm_current_channel = 0;
+    ppm_channels[ppm_current_channel] = ppm_dt;         
+  }
+  else {
+    if( ppm_sync ) {
+      ppm_current_channel++;
+      if( ppm_current_channel > NUMBER_OF_PPM_CHANNELS ) ppm_sync = false;
+      else ppm_channels[ppm_current_channel] = ppm_dt; 
+    }
+  }
+  last_ppm_clock = current_ppm_clock;   
+}
+///////////////////////////////////////////////////
+// AA PPM Input                                  //
+///////////////////////////////////////////////////
+
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //Setup routine
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void setup(){
-  //Serial.begin(57600);
+  Serial.begin(57600);
+  
   //Copy the EEPROM data for fast access data.
   for(start = 0; start <= 35; start++)eeprom_data[start] = EEPROM.read(start);
   start = 0;                                                                //Set start back to zero.
@@ -122,16 +157,28 @@ void setup(){
   gyro_axis_cal[2] /= 2000;                                                 //Divide the pitch total by 2000.
   gyro_axis_cal[3] /= 2000;                                                 //Divide the yaw total by 2000.
 
-  PCICR |= (1 << PCIE0);                                                    //Set PCIE0 to enable PCMSK0 scan.
-  PCMSK0 |= (1 << PCINT0);                                                  //Set PCINT0 (digital input 8) to trigger an interrupt on state change.
-  PCMSK0 |= (1 << PCINT1);                                                  //Set PCINT1 (digital input 9)to trigger an interrupt on state change.
-  PCMSK0 |= (1 << PCINT2);                                                  //Set PCINT2 (digital input 10)to trigger an interrupt on state change.
-  PCMSK0 |= (1 << PCINT3);                                                  //Set PCINT3 (digital input 11)to trigger an interrupt on state change.
+//  PCICR |= (1 << PCIE0);                                                    //Set PCIE0 to enable PCMSK0 scan.
+//  PCMSK0 |= (1 << PCINT0);                                                  //Set PCINT0 (digital input 8) to trigger an interrupt on state change.
+//  PCMSK0 |= (1 << PCINT1);                                                  //Set PCINT1 (digital input 9)to trigger an interrupt on state change.
+//  PCMSK0 |= (1 << PCINT2);                                                  //Set PCINT2 (digital input 10)to trigger an interrupt on state change.
+//  PCMSK0 |= (1 << PCINT3);                                                  //Set PCINT3 (digital input 11)to trigger an interrupt on state change.
+  attachInterrupt(digitalPinToInterrupt(3), ppmRising, RISING);  // AA PPM input setup
+  
 
   //Wait until the receiver is active and the throtle is set to the lower position.
   while(receiver_input_channel_3 < 990 || receiver_input_channel_3 > 1020 || receiver_input_channel_4 < 1400){
-    receiver_input_channel_3 = convert_receiver_channel(3);                 //Convert the actual receiver signals for throttle to the standard 1000 - 2000us
-    receiver_input_channel_4 = convert_receiver_channel(4);                 //Convert the actual receiver signals for yaw to the standard 1000 - 2000us
+//    receiver_input_channel_3 = convert_receiver_channel(3);                 //Convert the actual receiver signals for throttle to the standard 1000 - 2000us
+//    receiver_input_channel_4 = convert_receiver_channel(4);                 //Convert the actual receiver signals for yaw to the standard 1000 - 2000us
+
+    // AA lets just read all channels even though we are only checking 2 of them
+    receiver_input_channel_1 = convert_receiver_channel(1);    //Convert the actual receiver signals for throttle to the standard 1000 - 2000us
+    receiver_input_channel_2 = convert_receiver_channel(2);    //Convert the actual receiver signals for yaw to the standard 1000 - 2000us    
+    receiver_input_channel_3 = convert_receiver_channel(3);    //Convert the actual receiver signals for throttle to the standard 1000 - 2000us
+    receiver_input_channel_4 = convert_receiver_channel(4);    //Convert the actual receiver signals for yaw to the standard 1000 - 2000us
+
+    //AA Debug RX channel inputs
+    //Serial.print( receiver_input_channel_1 ); Serial.print( " " ); Serial.print( receiver_input_channel_2 ); Serial.print( " " ); Serial.print( receiver_input_channel_3 ); Serial.print( " " ); Serial.println( receiver_input_channel_4 );
+    
     start ++;                                                               //While waiting increment start whith every loop.
     //We don't want the esc's to be beeping annoyingly. So let's give them a 1000us puls while waiting for the receiver inputs.
     PORTD |= B11110000;                                                     //Set digital poort 4, 5, 6 and 7 high.
@@ -158,6 +205,9 @@ void setup(){
   //When everything is done, turn off the led.
   digitalWrite(12,LOW);                                                     //Turn off the warning led.
 }
+
+float throttle_input_gain = 0.0;
+float f_throttle = 1000;
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //Main program loop
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -269,10 +319,25 @@ void loop(){
   battery_voltage = battery_voltage * 0.92 + (analogRead(0) + 65) * 0.09853;
 
   //Turn on the led if battery voltage is to low.
-  if(battery_voltage < 1000 && battery_voltage > 600)digitalWrite(12, HIGH);
+  //AA if(battery_voltage < 1000 && battery_voltage > 600)digitalWrite(12, HIGH);
 
 
-  throttle = receiver_input_channel_3;                                      //We need the throttle signal as a base signal.
+  // AA throttle = receiver_input_channel_3;                                      //We need the throttle signal as a base signal.
+
+  // AA
+  if( receiver_input_channel_3 > 1010 ) {
+    throttle_input_gain = (receiver_input_channel_3 - 1500) / 600.0;
+    throttle = (int)( f_throttle += throttle_input_gain );
+  } else {
+    f_throttle = throttle = 1000;
+  }
+
+  if( f_throttle < 1000 ) f_throttle = 1000;
+  if( f_throttle > 2000 ) f_throttle = 2000;
+  if( throttle < 1000    ) throttle = 1000;
+  if( throttle > 2000    ) throttle = 2000;  
+  // AA
+
 
   if (start == 2){                                                          //The motors are started.
     if (throttle > 1800) throttle = 1800;                                   //We need some room to keep full control at full throttle.
@@ -306,6 +371,16 @@ void loop(){
     esc_4 = 1000;                                                           //If start is not 2 keep a 1000us pulse for ess-4.
   }
 
+//  Serial.print( throttle );
+//  Serial.print( "\t" );
+//  Serial.print( esc_1 );
+//  Serial.print( "\t" );
+//  Serial.print( esc_2 );
+//  Serial.print( "\t" );
+//  Serial.print( esc_3 );
+//  Serial.print( "\t" );
+//  Serial.println( esc_4 );
+
   ////////////////////////////////////////////////////////////////////////////////////////////////////
   //Creating the pulses for the ESC's is explained in this video:
   //https://youtu.be/fqEkVcqxtU8
@@ -318,8 +393,8 @@ void loop(){
   //the Q&A page: 
   //! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !
     
-  if(micros() - loop_timer > 4050)digitalWrite(12, HIGH);                   //Turn on the LED if the loop time exceeds 4050us.
-  
+  // AA if(micros() - loop_timer > 4050)digitalWrite(12, HIGH);                   //Turn on the LED if the loop time exceeds 4050us.
+
   //All the information for controlling the motor's is available.
   //The refresh rate is 250Hz. That means the esc's need there pulse every 4ms.
   while(micros() - loop_timer < 4000);                                      //We wait until 4000us are passed.
@@ -335,6 +410,7 @@ void loop(){
   //Get the current gyro and receiver data and scale it to degrees per second for the pid calculations.
   gyro_signalen();
 
+  digitalWrite(12, HIGH);
   while(PORTD >= 16){                                                       //Stay in this loop until output 4,5,6 and 7 are low.
     esc_loop_timer = micros();                                              //Read the current time.
     if(timer_channel_1 <= esc_loop_timer)PORTD &= B11101111;                //Set digital output 4 to low if the time is expired.
@@ -342,8 +418,10 @@ void loop(){
     if(timer_channel_3 <= esc_loop_timer)PORTD &= B10111111;                //Set digital output 6 to low if the time is expired.
     if(timer_channel_4 <= esc_loop_timer)PORTD &= B01111111;                //Set digital output 7 to low if the time is expired.
   }
+  digitalWrite(12, LOW);
 }
 
+/*
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //This routine is called every time input 8, 9, 10 or 11 changed state. This is used to read the receiver signals. 
 //More information about this subroutine can be found in this video:
@@ -397,6 +475,7 @@ ISR(PCINT0_vect){
     receiver_input[4] = current_time - timer_4;                             //Channel 4 is current_time - timer_4.
   }
 }
+*/
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //Subroutine for reading the gyro
@@ -499,7 +578,15 @@ int convert_receiver_channel(byte function){
   if(eeprom_data[function + 23] & 0b10000000)reverse = 1;                      //Reverse channel when most significant bit is set
   else reverse = 0;                                                            //If the most significant is not set there is no reverse
 
-  actual = receiver_input[channel];                                            //Read the actual receiver value for the corresponding function
+  //AA actual = receiver_input[channel];                                            //Read the actual receiver value for the corresponding function
+  // AA read from the PPM channel
+  cli();  
+    actual = ppm_channels[channel] ;
+  sei();
+  // 20us of deadband
+  if( actual >= 1490 && actual <= 1510 ) actual    = 1500;
+  
+  
   low = (eeprom_data[channel * 2 + 15] << 8) | eeprom_data[channel * 2 + 14];  //Store the low value for the specific receiver input channel
   center = (eeprom_data[channel * 2 - 1] << 8) | eeprom_data[channel * 2 - 2]; //Store the center value for the specific receiver input channel
   high = (eeprom_data[channel * 2 + 7] << 8) | eeprom_data[channel * 2 + 6];   //Store the high value for the specific receiver input channel
